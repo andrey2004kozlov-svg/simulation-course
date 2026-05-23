@@ -1,0 +1,211 @@
+import tkinter as tk
+from tkinter import messagebox, ttk
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import time
+
+
+class BallisticSimulator:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Моделирование полёта тела")
+        self.root.geometry("900x700")
+
+        self.g, self.m, self.k = 9.81, 1.0, 0.01
+        self.v0 = 0.0
+        self.angle = 0.0
+        self.h = 0.0
+        self.v0x = 0.0
+        self.v0y = 0.0
+
+        self.is_animating = False
+        self.animation_job = None
+        self.speed_factor = 100.0
+        self.results_data = []
+
+        self.create_widgets()
+
+    def create_widgets(self):
+        top_frame = tk.Frame(self.root)
+        top_frame.pack(pady=10)
+
+        tk.Label(top_frame, text="Шаг моделирования (с):").pack(side=tk.LEFT, padx=5)
+        self.dt_entry = tk.Entry(top_frame, width=5)
+        self.dt_entry.pack(side=tk.LEFT, padx=5)
+        self.dt_entry.insert(0, "0.01")
+
+        tk.Label(top_frame, text="Высота (м):").pack(side=tk.LEFT, padx=5)
+        self.h_entry = tk.Entry(top_frame, width=10)
+        self.h_entry.pack(side=tk.LEFT, padx=5)
+        self.h_entry.insert(0, "0")
+
+        tk.Label(top_frame, text="Угол (в градусах):").pack(side=tk.LEFT, padx=5)
+        self.angle_entry = tk.Entry(top_frame, width=10)
+        self.angle_entry.pack(side=tk.LEFT, padx=5)
+        self.angle_entry.insert(0, "45")
+
+        tk.Label(top_frame, text="Скорость (м/с):").pack(side=tk.LEFT, padx=5)
+        self.v0_entry = tk.Entry(top_frame, width=10)
+        self.v0_entry.pack(side=tk.LEFT, padx=5)
+        self.v0_entry.insert(0, "30")
+
+        self.run_btn = tk.Button(top_frame, text="Запустить", command=self.run_simulation)
+        self.run_btn.pack(side=tk.LEFT, padx=5)
+
+        self.clear_btn = tk.Button(top_frame, text="Очистить", command=self.clear_plot)
+        self.clear_btn.pack(side=tk.LEFT, padx=5)
+
+        result_frame = tk.LabelFrame(self.root, text="Результаты испытаний", padx=10, pady=10)
+        result_frame.pack(pady=10, padx=10, fill=tk.X)
+
+        columns = ("step", "range", "max_height", "speed")
+        self.result_table = ttk.Treeview(result_frame, columns=columns, show="headings", height=5)
+
+        self.result_table.heading("step", text="Шаг моделирования, с")
+        self.result_table.heading("range", text="Дальность полёта, м")
+        self.result_table.heading("max_height", text="Максимальная высота, м")
+        self.result_table.heading("speed", text="Скорость в конечной точке, м/с")
+
+        self.result_table.column("step", width=150)
+        self.result_table.column("range", width=150)
+        self.result_table.column("max_height", width=180)
+        self.result_table.column("speed", width=180)
+
+        scrollbar = ttk.Scrollbar(result_frame, orient=tk.VERTICAL, command=self.result_table.yview)
+        self.result_table.configure(yscrollcommand=scrollbar.set)
+
+        self.result_table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        plot_frame = tk.LabelFrame(self.root, text="Траектория", padx=10, pady=10)
+        plot_frame.pack(pady=10, padx=10, fill=tk.BOTH, expand=True)
+
+        self.fig, self.ax = plt.subplots(figsize=(7, 4))
+        self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        self.ax.set_xlabel("Дальность (м)")
+        self.ax.set_ylabel("Высота (м)")
+        self.ax.set_title("Траектория полёта")
+        self.ax.grid(True)
+        self.ax.set_xlim(0, 100)
+        self.ax.set_ylim(0, 50)
+
+    def simulate_step(self, state, dt):
+        x, y, vx, vy = state
+        v = np.hypot(vx, vy)
+        ax = -self.k * v * vx / self.m
+        ay = -self.k * v * vy / self.m - self.g
+        return x + vx * dt, y + vy * dt, vx + ax * dt, vy + ay * dt
+
+    def animate_trajectory(self, dt, color):
+        if self.is_animating:
+            return
+
+        self.is_animating = True
+        self.run_btn.config(state=tk.DISABLED)
+
+        x, y, vx, vy = 0.0, self.h, self.v0x, self.v0y
+        max_h, t = y, 0.0
+        x_vals, y_vals = [0], [self.h]
+
+        line, = self.ax.plot([], [], color=color, linewidth=2, label=f"dt={dt}с")
+        point, = self.ax.plot([], [], 'o', color=color, markersize=8)
+        self.ax.legend()
+        self.canvas.draw()
+
+        def update():
+            nonlocal x, y, vx, vy, max_h, t, x_vals, y_vals
+
+            if y < 0:
+                self.is_animating = False
+                self.run_btn.config(state=tk.NORMAL)
+                v_end = np.hypot(vx, vy)
+
+                self.add_result_to_table(dt, x, max_h, v_end)
+
+                self.ax.plot(x_vals, y_vals, color=color, linewidth=2)
+                self.ax.legend()
+                self.canvas.draw()
+                return
+
+            steps = max(1, int(self.speed_factor))
+            for _ in range(steps):
+                if y >= 0:
+                    x, y, vx, vy = self.simulate_step((x, y, vx, vy), dt)
+                    t += dt
+                    if y > max_h:
+                        max_h = y
+                    x_vals.append(x)
+                    y_vals.append(max(0, y))
+
+            line.set_data(x_vals, y_vals)
+            point.set_data([x], [max(0, y)])
+
+            x_max, y_max = max(x_vals) * 1.1, max(y_vals) * 1.1
+            if x_max > self.ax.get_xlim()[1]:
+                self.ax.set_xlim(0, x_max)
+            if y_max > self.ax.get_ylim()[1]:
+                self.ax.set_ylim(0, y_max)
+
+            self.canvas.draw()
+            self.canvas.flush_events()
+
+            if self.is_animating:
+                self.animation_job = self.root.after(16, update)
+
+        update()
+
+    def add_result_to_table(self, step, range_val, max_height, speed):
+        self.result_table.insert("", 0, values=(
+            f"{step:.4f}",
+            f"{range_val:.2f}",
+            f"{max_height:.2f}",
+            f"{speed:.2f}"
+        ))
+
+        items = self.result_table.get_children()
+        if len(items) > 10:
+            self.result_table.delete(items[-1])
+
+    def run_simulation(self):
+        dt = float(self.dt_entry.get())
+        self.h = float(self.h_entry.get())
+        self.v0 = float(self.v0_entry.get())
+        self.angle = float(self.angle_entry.get())
+
+        self.v0x = self.v0 * np.cos(np.radians(self.angle))
+        self.v0y = self.v0 * np.sin(np.radians(self.angle))
+
+        if self.animation_job:
+            self.root.after_cancel(self.animation_job)
+
+        colors = ['red', 'green', 'blue', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
+        color = colors[len(self.result_table.get_children()) % len(colors)]
+
+        self.animate_trajectory(dt, color)
+
+    def clear_plot(self):
+        if self.animation_job:
+            self.root.after_cancel(self.animation_job)
+        self.is_animating = False
+        self.run_btn.config(state=tk.NORMAL)
+
+        self.ax.clear()
+        self.ax.set_xlabel("Дальность (м)")
+        self.ax.set_ylabel("Высота (м)")
+        self.ax.set_title("Траектория полёта")
+        self.ax.grid(True)
+        self.ax.set_xlim(0, 100)
+        self.ax.set_ylim(0, 50)
+        self.canvas.draw()
+
+        for item in self.result_table.get_children():
+            self.result_table.delete(item)
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = BallisticSimulator(root)
+    root.mainloop()
